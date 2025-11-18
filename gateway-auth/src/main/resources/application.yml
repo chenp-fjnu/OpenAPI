@@ -1,0 +1,196 @@
+# 集团级API网关系统 - Gateway Auth模块配置
+# 认证授权服务配置文件
+
+server:
+  port: 8081
+  servlet:
+    context-path: /gateway-auth
+
+spring:
+  # 数据库配置
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:gateway}?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:password}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      auto-commit: true
+      idle-timeout: 30000
+      pool-name: GatewayAuthHikariCP
+      max-lifetime: 1800000
+      connection-timeout: 30000
+      
+  # JPA/Hibernate配置
+  jpa:
+    hibernate:
+      ddl-auto: validate
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.SnakeCasePhysicalNamingStrategy
+    show-sql: ${JPA_SHOW_SQL:false}
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQL8Dialect
+        format_sql: true
+    defer-datasource-initialization: false
+    
+  # Redis配置
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    timeout: 2000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-wait: -1
+        max-idle: 8
+        min-idle: 0
+    database: ${REDIS_DB:0}
+    
+  # 邮件配置
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+          ssl:
+            trust: "*"
+            
+  # 应用配置
+  application:
+    name: gateway-auth
+    
+# JWT配置
+gateway:
+  app:
+    jwtSecret: ${JWT_SECRET:MySecretKeyForGatewayAuthSystem2024}
+    jwtExpirationMs: ${JWT_EXPIRATION_MS:86400000}  # 24小时
+    jwtRefreshExpirationMs: ${JWT_REFRESH_EXPIRATION_MS:604800000}  # 7天
+    frontend-url: ${FRONTEND_URL:http://localhost:3000}
+    captcha-required: true
+    password-policy:
+      min-length: 8
+      max-length: 32
+      require-uppercase: true
+      require-lowercase: true
+      require-numbers: true
+      require-special-chars: true
+      prevent-common-passwords: true
+    mfa:
+      enabled: ${MFA_ENABLED:true}
+      issuer: ${MFA_ISSUER:Group Gateway System}
+    rate-limiting:
+      enabled: true
+      max-attempts: 5
+      lockout-duration: 900  # 15分钟
+    
+# 服务器配置
+server:
+  servlet:
+    context-path: /gateway-auth
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never
+    include-exception: true
+    
+# 日志配置
+logging:
+  level:
+    com.group.gateway.auth: ${LOG_LEVEL:INFO}
+    org.springframework.security: ${SECURITY_LOG_LEVEL:INFO}
+    org.hibernate.SQL: ${SQL_LOG_LEVEL:WARN}
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/gateway-auth.log
+    max-size: 100MB
+    max-history: 30
+    
+# 管理端点配置
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: ${HEALTH_SHOW_DETAILS:when-authorized}
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+        
+# 安全配置
+security:
+  require-ssl: false
+  headers:
+    frame-options: DENY
+    content-type-options: nosniff
+    xss-protection: 1; mode=block
+    referrer-policy: strict-origin-when-cross-origin
+    
+# CORS配置
+cors:
+  allowed-origins:
+    - http://localhost:3000
+    - http://localhost:8080
+    - ${FRONTEND_URL:http://localhost:3000}
+  allowed-methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    - OPTIONS
+    - PATCH
+  allowed-headers:
+    - Authorization
+    - Content-Type
+    - X-Requested-With
+    - Accept
+    - Origin
+    - Access-Control-Request-Method
+    - Access-Control-Request-Headers
+  exposed-headers:
+    - X-Total-Count
+    - X-Page-Number
+    - X-Page-Size
+  allow-credentials: true
+  max-age: 3600
+  
+# Swagger文档配置
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    filter: true
+    display-request-duration: true
+    show-extensions: true
+    show-common-extensions: true
+    
+# 认证配置
+auth:
+  login:
+    max-attempts: 5
+    lockout-duration: 900  # 15分钟
+    session-timeout: 1800  # 30分钟
+  token:
+    refresh-threshold: 300  # 5分钟
+    cleanup-interval: 3600  # 1小时
+  password:
+    history-count: 5
+    change-interval: 86400  # 24小时
