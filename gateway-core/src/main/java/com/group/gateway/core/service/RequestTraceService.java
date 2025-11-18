@@ -1,5 +1,6 @@
 package com.group.gateway.core.service;
 
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ServerWebExchange;
@@ -7,21 +8,156 @@ import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import reactor.core.publisher.Mono;
 
-import java.time.Instant;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 请求链路追踪服务
- * 负责记录请求完整生命周期和监控指标
+ * 请求追踪服务
+ * 负责记录和分析API请求的完整生命周期，包括请求开始、结束、耗时、状态等信息
+ * 支持链路追踪和监控指标收集
  * 
- * @author Group Gateway Team
- * @version 1.0.0
+ * @author system
+ * @version 1.0
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class RequestTraceService {
+
+    /**
+     * 请求追踪信息数据模型
+     */
+    public static class RequestTraceInfo {
+        private String traceId;
+        private Instant requestTime;
+        private Instant endTime;
+        private String method;
+        private String path;
+        private String query;
+        private String clientIp;
+        private String userAgent;
+        private String userId;
+        private String tenantId;
+        private String clientId;
+        private int statusCode;
+        private long duration;
+        private boolean success;
+        private String errorMessage;
+        private String errorClass;
+
+        // Getters and Setters
+        public String getTraceId() { return traceId; }
+        public void setTraceId(String traceId) { this.traceId = traceId; }
+
+        public Instant getRequestTime() { return requestTime; }
+        public void setRequestTime(Instant requestTime) { this.requestTime = requestTime; }
+
+        public Instant getEndTime() { return endTime; }
+        public void setEndTime(Instant endTime) { this.endTime = endTime; }
+
+        public String getMethod() { return method; }
+        public void setMethod(String method) { this.method = method; }
+
+        public String getPath() { return path; }
+        public void setPath(String path) { this.path = path; }
+
+        public String getQuery() { return query; }
+        public void setQuery(String query) { this.query = query; }
+
+        public String getClientIp() { return clientIp; }
+        public void setClientIp(String clientIp) { this.clientIp = clientIp; }
+
+        public String getUserAgent() { return userAgent; }
+        public void setUserAgent(String userAgent) { this.userAgent = userAgent; }
+
+        public String getUserId() { return userId; }
+        public void setUserId(String userId) { this.userId = userId; }
+
+        public String getTenantId() { return tenantId; }
+        public void setTenantId(String tenantId) { this.tenantId = tenantId; }
+
+        public String getClientId() { return clientId; }
+        public void setClientId(String clientId) { this.clientId = clientId; }
+
+        public int getStatusCode() { return statusCode; }
+        public void setStatusCode(int statusCode) { this.statusCode = statusCode; }
+
+        public long getDuration() { return duration; }
+        public void setDuration(long duration) { this.duration = duration; }
+
+        public boolean isSuccess() { return success; }
+        public void setSuccess(boolean success) { this.success = success; }
+
+        public String getErrorMessage() { return errorMessage; }
+        public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+
+        public String getErrorClass() { return errorClass; }
+        public void setErrorClass(String errorClass) { this.errorClass = errorClass; }
+
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        public static class Builder {
+            private RequestTraceInfo info = new RequestTraceInfo();
+
+            public Builder traceId(String traceId) {
+                info.traceId = traceId;
+                return this;
+            }
+
+            public Builder requestTime(Instant requestTime) {
+                info.requestTime = requestTime;
+                return this;
+            }
+
+            public Builder method(String method) {
+                info.method = method;
+                return this;
+            }
+
+            public Builder path(String path) {
+                info.path = path;
+                return this;
+            }
+
+            public Builder query(String query) {
+                info.query = query;
+                return this;
+            }
+
+            public Builder clientIp(String clientIp) {
+                info.clientIp = clientIp;
+                return this;
+            }
+
+            public Builder userAgent(String userAgent) {
+                info.userAgent = userAgent;
+                return this;
+            }
+
+            public Builder userId(String userId) {
+                info.userId = userId;
+                return this;
+            }
+
+            public Builder tenantId(String tenantId) {
+                info.tenantId = tenantId;
+                return this;
+            }
+
+            public Builder clientId(String clientId) {
+                info.clientId = clientId;
+                return this;
+            }
+
+            public RequestTraceInfo build() {
+                return info;
+            }
+        }
+    }
     
     // 内存缓存用于存储请求开始信息（生产环境应使用Redis或数据库）
     private final Map<String, RequestTraceInfo> traceInfoCache = new ConcurrentHashMap<>();
