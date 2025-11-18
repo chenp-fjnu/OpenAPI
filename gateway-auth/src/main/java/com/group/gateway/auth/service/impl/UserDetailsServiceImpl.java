@@ -8,13 +8,14 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * UserDetailsService实现类
- * 为Spring Security提供用户详情加载服务
+ * 用户详情服务实现
+ * 实现Spring Security的UserDetailsService接口
  * 
  * @author Group Gateway Team
  * @version 1.0.0
@@ -26,89 +27,52 @@ public class UserDetailsServiceImpl implements UserDetailsService {
     private UserService userService;
     
     @Override
-    public UserDetails loadUserByUsername(String usernameOrEmail) throws UsernameNotFoundException {
-        try {
-            User user = userService.findByUsername(usernameOrEmail);
-            if (user == null) {
-                // 尝试通过邮箱查找
-                user = userService.findByEmail(usernameOrEmail);
-            }
-            
-            if (user == null) {
-                throw new UsernameNotFoundException("用户不存在: " + usernameOrEmail);
-            }
-            
-            if (!user.getEnabled()) {
-                throw new UsernameNotFoundException("用户已被禁用: " + usernameOrEmail);
-            }
-            
-            // 获取用户角色和权限
-            List<String> roles = userService.getUserRoles(user.getId());
-            List<String> permissions = userService.getUserPermissions(user.getId());
-            
-            // 构建权限列表
-            List<SimpleGrantedAuthority> authorities = roles.stream()
-                .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
-                .collect(Collectors.toList());
-            
-            authorities.addAll(permissions.stream()
-                .map(SimpleGrantedAuthority::new)
-                .collect(Collectors.toList()));
-            
-            return org.springframework.security.core.userdetails.User.builder()
-                .username(user.getUsername())
-                .password(user.getPassword())
-                .authorities(authorities)
-                .accountExpired(!user.getAccountNonExpired())
-                .accountLocked(!user.getAccountNonLocked())
-                .credentialsExpired(!user.getCredentialsNonExpired())
-                .disabled(!user.getEnabled())
-                .build();
-                
-        } catch (Exception e) {
-            throw new UsernameNotFoundException("用户加载失败: " + usernameOrEmail, e);
-        }
+    @Transactional
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        User user = userService.getUserByUsername(username)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found with username: " + username));
+        
+        return buildUserDetails(user);
     }
     
     /**
      * 根据用户ID加载用户详情
      */
-    public UserDetails loadUserById(Long userId) throws UsernameNotFoundException {
-        try {
-            User user = userService.findById(userId);
-            if (user == null) {
-                throw new UsernameNotFoundException("用户不存在: ID " + userId);
-            }
-            
-            if (!user.getEnabled()) {
-                throw new UsernameNotFoundException("用户已被禁用: ID " + userId);
-            }
-            
-            // 获取用户角色和权限
-            List<String> roles = userService.getUserRoles(userId);
-            List<String> permissions = userService.getUserPermissions(userId);
-            
-            // 构建权限列表
-            List<SimpleGrantedAuthority> authorities = roles.stream()
+    @Transactional
+    public UserDetails loadUserById(String id) {
+        User user = userService.getUserById(id)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found with id: " + id));
+        
+        return buildUserDetails(user);
+    }
+    
+    /**
+     * 构建UserDetails对象
+     */
+    private UserDetails buildUserDetails(User user) {
+        // 获取用户角色
+        List<String> roleNames = userService.getUserRoleNames(user.getId());
+        
+        // 获取用户权限
+        List<String> permissionNames = userService.getUserPermissionNames(user.getId());
+        
+        // 合并角色和权限
+        List<SimpleGrantedAuthority> authorities = roleNames.stream()
                 .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
                 .collect(Collectors.toList());
-            
-            authorities.addAll(permissions.stream()
-                .map(SimpleGrantedAuthority::new)
+        
+        authorities.addAll(permissionNames.stream()
+                .map(permission -> new SimpleGrantedAuthority(permission))
                 .collect(Collectors.toList()));
-            
-            return org.springframework.security.core.userdetails.User.builder()
+        
+        return org.springframework.security.core.userdetails.User.builder()
                 .username(user.getUsername())
                 .password(user.getPassword())
                 .authorities(authorities)
-                .accountExpired(!user.getAccountNonExpired())
-                .accountLocked(!user.getAccountNonLocked())
-                .credentialsExpired(!user.getCredentialsNonExpired())
-                .disabled(!user.getEnabled())
+                .accountExpired(false)
+                .accountLocked(user.getStatus() == User.UserStatus.LOCKED)
+                .credentialsExpired(false)
+                .disabled(user.getStatus() == User.UserStatus.DISABLED)
                 .build();
-                
-        } catch (Exception e) {
-            throw new UsernameNotFoundException("用户加载失败: ID " + userId, e);
-        }
     }
 }
