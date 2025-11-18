@@ -1,343 +1,242 @@
 package com.group.gateway.core.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.stereotype.Component;
+import com.group.gateway.core.filter.GlobalRequestFilter;
+import com.group.gateway.core.filter.GlobalResponseFilter;
+import com.group.gateway.core.filter.AuthFilter;
+import com.group.gateway.core.filter.RateLimitFilter;
+import com.group.gateway.core.filter.CircuitBreakerFilter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cloud.gateway.config.GatewayProperties;
+import org.springframework.cloud.gateway.filter.factory.RequestRateLimiterGatewayFilterFactory;
+import org.springframework.cloud.gateway.filter.factory.RetryGatewayFilterFactory;
+import org.springframework.cloud.gateway.filter.factory.StripPrefixGatewayFilterFactory;
+import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver;
+import org.springframework.cloud.gateway.route.Route;
+import org.springframework.cloud.gateway.route.RouteLocator;
+import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
+import org.springframework.cloud.gateway.support.NameUtils;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.util.pattern.PathPatternParser;
+import reactor.core.publisher.Mono;
 
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
- * Gateway配置类
- * 管理网关的核心配置参数
+ * 网关核心配置类
  * 
  * @author Group Gateway Team
  * @version 1.0.0
  */
-@Component
-@ConfigurationProperties(prefix = "gateway.config")
+@Configuration
+@RequiredArgsConstructor
 public class GatewayConfig {
     
-    private boolean enabled = true;
-    private String name = "Group API Gateway";
-    private String version = "1.0.0";
-    private int port = 8080;
-    private String contextPath = "/";
-    private boolean enableCors = true;
-    private boolean enableRateLimit = true;
-    private boolean enableAuth = true;
-    private boolean enableLogging = true;
-    private boolean enableMetrics = true;
-    private boolean enableTracing = true;
+    @Value("${gateway.rate.limit.enabled:true}")
+    private boolean rateLimitEnabled;
     
-    // CORS配置
-    private Cors cors = new Cors();
+    @Value("${gateway.circuit.breaker.enabled:true}")
+    private boolean circuitBreakerEnabled;
     
-    // 限流配置
-    private RateLimit rateLimit = new RateLimit();
+    @Value("${gateway.auth.enabled:true}")
+    private boolean authEnabled;
     
-    // 认证配置
-    private Auth auth = new Auth();
-    
-    // 负载均衡配置
-    private LoadBalancer loadBalancer = new LoadBalancer();
-    
-    // 重试配置
-    private Retry retry = new Retry();
-    
-    // 超时配置
-    private Timeout timeout = new Timeout();
-    
-    // 健康检查配置
-    private HealthCheck healthCheck = new HealthCheck();
-    
-    // 熔断器配置
-    private CircuitBreaker circuitBreaker = new CircuitBreaker();
-    
-    public boolean isEnabled() {
-        return enabled;
+    /**
+     * 自定义路由配置
+     */
+    @Bean
+    public RouteLocator customRouteLocator(RouteLocatorBuilder builder) {
+        return builder.routes()
+            // 公共API路由
+            .route("public_api", r -> r
+                .path("/api/public/**")
+                .filters(f -> f
+                    .stripPrefix(2)
+                    .requestRateLimiter(config -> config
+                        .setRateLimiter(redisRateLimiter())
+                        .setKeyResolver(ipKeyResolver())
+                        .setStatusCode(429)
+                    )
+                    .circuitBreaker(config -> config
+                        .setName("publicApiCircuitBreaker")
+                        .setFallbackUri("forward:/fallback/public")
+                        .setTimeoutDuration(5000)
+                    )
+                )
+                .uri("lb://public-service")
+            )
+            
+            // 私有API路由
+            .route("private_api", r -> r
+                .path("/api/private/**")
+                .filters(f -> f
+                    .stripPrefix(2)
+                    .requestRateLimiter(config -> config
+                        .setRateLimiter(redisRateLimiter())
+                        .setKeyResolver(userKeyResolver())
+                        .setStatusCode(429)
+                    )
+                    .circuitBreaker(config -> config
+                        .setName("privateApiCircuitBreaker")
+                        .setFallbackUri("forward:/fallback/private")
+                        .setTimeoutDuration(3000)
+                    )
+                )
+                .uri("lb://private-service")
+            )
+            
+            // 管理API路由
+            .route("admin_api", r -> r
+                .path("/api/admin/**")
+                .filters(f -> f
+                    .stripPrefix(2)
+                    .requestRateLimiter(config -> config
+                        .setRateLimiter(redisRateLimiter())
+                        .setKeyResolver(userKeyResolver())
+                        .setStatusCode(429)
+                    )
+                )
+                .uri("lb://admin-service")
+            )
+            
+            // 实时数据API路由
+            .route("realtime_api", r -> r
+                .path("/api/realtime/**")
+                .filters(f -> f
+                    .stripPrefix(2)
+                    .requestRateLimiter(config -> config
+                        .setRateLimiter(redisRateLimiter())
+                        .setKeyResolver(clientKeyResolver())
+                        .setStatusCode(429)
+                    )
+                    .retry(config -> config
+                        .setRetries(2)
+                        .setSeries(Arrays.asList(HttpMethod.INTERNAL_SERVER_ERROR, 
+                                                HttpMethod.BAD_GATEWAY, 
+                                                HttpMethod.SERVICE_UNAVAILABLE))
+                    )
+                )
+                .uri("lb://realtime-service")
+            )
+            .build();
     }
     
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
+    /**
+     * IP限流解析器
+     */
+    @Bean("ipKeyResolver")
+    public KeyResolver ipKeyResolver() {
+        return exchange -> Mono.just(
+            exchange.getRequest().getRemoteAddress()
+                .map(address -> address.getAddress().getHostAddress())
+                .defaultIfEmpty("unknown")
+        );
     }
     
-    public String getName() {
-        return name;
+    /**
+     * 用户限流解析器
+     */
+    @Bean("userKeyResolver")
+    public KeyResolver userKeyResolver() {
+        return exchange -> {
+            String userId = exchange.getRequest().getHeaders()
+                .getFirst("X-User-ID");
+            return Mono.just(userId != null ? userId : "anonymous");
+        };
     }
     
-    public void setName(String name) {
-        this.name = name;
+    /**
+     * 客户端限流解析器
+     */
+    @Bean("clientKeyResolver")
+    public KeyResolver clientKeyResolver() {
+        return exchange -> {
+            String clientId = exchange.getRequest().getHeaders()
+                .getFirst("X-Client-ID");
+            String userAgent = exchange.getRequest().getHeaders()
+                .getFirst("User-Agent");
+            return Mono.just((clientId != null ? clientId : "unknown") + "-" + 
+                           (userAgent != null ? userAgent.hashCode() : "0"));
+        };
     }
     
-    public String getVersion() {
-        return version;
+    /**
+     * Redis限流器配置
+     */
+    @Bean
+    public RequestRateLimiterGatewayFilterFactory redisRateLimiter() {
+        return new RequestRateLimiterGatewayFilterFactory();
     }
     
-    public void setVersion(String version) {
-        this.version = version;
+    /**
+     * 全局请求过滤器
+     */
+    @Bean
+    public GlobalRequestFilter globalRequestFilter() {
+        return new GlobalRequestFilter();
     }
     
-    public int getPort() {
-        return port;
+    /**
+     * 全局响应过滤器
+     */
+    @Bean
+    public GlobalResponseFilter globalResponseFilter() {
+        return new GlobalResponseFilter();
     }
     
-    public void setPort(int port) {
-        this.port = port;
+    /**
+     * 认证过滤器
+     */
+    @Bean
+    public AuthFilter authFilter() {
+        return new AuthFilter();
     }
     
-    public String getContextPath() {
-        return contextPath;
+    /**
+     * 限流过滤器
+     */
+    @Bean
+    public RateLimitFilter rateLimitFilter() {
+        return new RateLimitFilter();
     }
     
-    public void setContextPath(String contextPath) {
-        this.contextPath = contextPath;
+    /**
+     * 熔断器过滤器
+     */
+    @Bean
+    public CircuitBreakerFilter circuitBreakerFilter() {
+        return new CircuitBreakerFilter();
     }
     
-    public boolean isEnableCors() {
-        return enableCors;
-    }
-    
-    public void setEnableCors(boolean enableCors) {
-        this.enableCors = enableCors;
-    }
-    
-    public boolean isEnableRateLimit() {
-        return enableRateLimit;
-    }
-    
-    public void setEnableRateLimit(boolean enableRateLimit) {
-        this.enableRateLimit = enableRateLimit;
-    }
-    
-    public boolean isEnableAuth() {
-        return enableAuth;
-    }
-    
-    public void setEnableAuth(boolean enableAuth) {
-        this.enableAuth = enableAuth;
-    }
-    
-    public boolean isEnableLogging() {
-        return enableLogging;
-    }
-    
-    public void setEnableLogging(boolean enableLogging) {
-        this.enableLogging = enableLogging;
-    }
-    
-    public boolean isEnableMetrics() {
-        return enableMetrics;
-    }
-    
-    public void setEnableMetrics(boolean enableMetrics) {
-        this.enableMetrics = enableMetrics;
-    }
-    
-    public boolean isEnableTracing() {
-        return enableTracing;
-    }
-    
-    public void setEnableTracing(boolean enableTracing) {
-        this.enableTracing = enableTracing;
-    }
-    
-    public Cors getCors() {
-        return cors;
-    }
-    
-    public void setCors(Cors cors) {
-        this.cors = cors;
-    }
-    
-    public RateLimit getRateLimit() {
-        return rateLimit;
-    }
-    
-    public void setRateLimit(RateLimit rateLimit) {
-        this.rateLimit = rateLimit;
-    }
-    
-    public Auth getAuth() {
-        return auth;
-    }
-    
-    public void setAuth(Auth auth) {
-        this.auth = auth;
-    }
-    
-    public LoadBalancer getLoadBalancer() {
-        return loadBalancer;
-    }
-    
-    public void setLoadBalancer(LoadBalancer loadBalancer) {
-        this.loadBalancer = loadBalancer;
-    }
-    
-    public Retry getRetry() {
-        return retry;
-    }
-    
-    public void setRetry(Retry retry) {
-        this.retry = retry;
-    }
-    
-    public Timeout getTimeout() {
-        return timeout;
-    }
-    
-    public void setTimeout(Timeout timeout) {
-        this.timeout = timeout;
-    }
-    
-    public HealthCheck getHealthCheck() {
-        return healthCheck;
-    }
-    
-    public void setHealthCheck(HealthCheck healthCheck) {
-        this.healthCheck = healthCheck;
-    }
-    
-    public CircuitBreaker getCircuitBreaker() {
-        return circuitBreaker;
-    }
-    
-    public void setCircuitBreaker(CircuitBreaker circuitBreaker) {
-        this.circuitBreaker = circuitBreaker;
-    }
-    
-    // 内部配置类
-    public static class Cors {
-        private List<String> allowedOrigins = List.of("*");
-        private List<String> allowedMethods = List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH");
-        private List<String> allowedHeaders = List.of("*");
-        private List<String> exposedHeaders = List.of();
-        private boolean allowCredentials = false;
-        private long maxAge = 3600;
+    /**
+     * 跨域配置
+     */
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOriginPatterns(Arrays.asList("*"));
+        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(Arrays.asList("*"));
+        configuration.setAllowCredentials(true);
+        configuration.setMaxAge(3600L);
         
-        // getters and setters
-        public List<String> getAllowedOrigins() { return allowedOrigins; }
-        public void setAllowedOrigins(List<String> allowedOrigins) { this.allowedOrigins = allowedOrigins; }
-        public List<String> getAllowedMethods() { return allowedMethods; }
-        public void setAllowedMethods(List<String> allowedMethods) { this.allowedMethods = allowedMethods; }
-        public List<String> getAllowedHeaders() { return allowedHeaders; }
-        public void setAllowedHeaders(List<String> allowedHeaders) { this.allowedHeaders = allowedHeaders; }
-        public List<String> getExposedHeaders() { return exposedHeaders; }
-        public void setExposedHeaders(List<String> exposedHeaders) { this.exposedHeaders = exposedHeaders; }
-        public boolean isAllowCredentials() { return allowCredentials; }
-        public void setAllowCredentials(boolean allowCredentials) { this.allowCredentials = allowCredentials; }
-        public long getMaxAge() { return maxAge; }
-        public void setMaxAge(long maxAge) { this.maxAge = maxAge; }
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
     }
     
-    public static class RateLimit {
-        private int defaultLimit = 100;
-        private int defaultWindowSeconds = 60;
-        private boolean enabled = true;
-        private Map<String, Integer> customLimits = Map.of();
-        
-        public int getDefaultLimit() { return defaultLimit; }
-        public void setDefaultLimit(int defaultLimit) { this.defaultLimit = defaultLimit; }
-        public int getDefaultWindowSeconds() { return defaultWindowSeconds; }
-        public void setDefaultWindowSeconds(int defaultWindowSeconds) { this.defaultWindowSeconds = defaultWindowSeconds; }
-        public boolean isEnabled() { return enabled; }
-        public void setEnabled(boolean enabled) { this.enabled = enabled; }
-        public Map<String, Integer> getCustomLimits() { return customLimits; }
-        public void setCustomLimits(Map<String, Integer> customLimits) { this.customLimits = customLimits; }
-    }
-    
-    public static class Auth {
-        private boolean enabled = true;
-        private String jwtSecret = "default-secret";
-        private long jwtExpirationMs = 86400000; // 24小时
-        private boolean requireAuth = false;
-        private List<String> publicPaths = List.of("/actuator/health", "/actuator/info");
-        
-        public boolean isEnabled() { return enabled; }
-        public void setEnabled(boolean enabled) { this.enabled = enabled; }
-        public String getJwtSecret() { return jwtSecret; }
-        public void setJwtSecret(String jwtSecret) { this.jwtSecret = jwtSecret; }
-        public long getJwtExpirationMs() { return jwtExpirationMs; }
-        public void setJwtExpirationMs(long jwtExpirationMs) { this.jwtExpirationMs = jwtExpirationMs; }
-        public boolean isRequireAuth() { return requireAuth; }
-        public void setRequireAuth(boolean requireAuth) { this.requireAuth = requireAuth; }
-        public List<String> getPublicPaths() { return publicPaths; }
-        public void setPublicPaths(List<String> publicPaths) { this.publicPaths = publicPaths; }
-    }
-    
-    public static class LoadBalancer {
-        private String algorithm = "round-robin";
-        private int maxRetries = 3;
-        private long retryDelayMs = 1000;
-        
-        public String getAlgorithm() { return algorithm; }
-        public void setAlgorithm(String algorithm) { this.algorithm = algorithm; }
-        public int getMaxRetries() { return maxRetries; }
-        public void setMaxRetries(int maxRetries) { this.maxRetries = maxRetries; }
-        public long getRetryDelayMs() { return retryDelayMs; }
-        public void setRetryDelayMs(long retryDelayMs) { this.retryDelayMs = retryDelayMs; }
-    }
-    
-    public static class Retry {
-        private int maxAttempts = 3;
-        private List<Integer> retryableStatusCodes = List.of(502, 503, 504);
-        private long backoffDelayMs = 1000;
-        private double backoffMultiplier = 2.0;
-        
-        public int getMaxAttempts() { return maxAttempts; }
-        public void setMaxAttempts(int maxAttempts) { this.maxAttempts = maxAttempts; }
-        public List<Integer> getRetryableStatusCodes() { return retryableStatusCodes; }
-        public void setRetryableStatusCodes(List<Integer> retryableStatusCodes) { this.retryableStatusCodes = retryableStatusCodes; }
-        public long getBackoffDelayMs() { return backoffDelayMs; }
-        public void setBackoffDelayMs(long backoffDelayMs) { this.backoffDelayMs = backoffDelayMs; }
-        public double getBackoffMultiplier() { return backoffMultiplier; }
-        public void setBackoffMultiplier(double backoffMultiplier) { this.backoffMultiplier = backoffMultiplier; }
-    }
-    
-    public static class Timeout {
-        private long connectTimeoutMs = 5000;
-        private long readTimeoutMs = 30000;
-        private long writeTimeoutMs = 30000;
-        
-        public long getConnectTimeoutMs() { return connectTimeoutMs; }
-        public void setConnectTimeoutMs(long connectTimeoutMs) { this.connectTimeoutMs = connectTimeoutMs; }
-        public long getReadTimeoutMs() { return readTimeoutMs; }
-        public void setReadTimeoutMs(long readTimeoutMs) { this.readTimeoutMs = readTimeoutMs; }
-        public long getWriteTimeoutMs() { return writeTimeoutMs; }
-        public void setWriteTimeoutMs(long writeTimeoutMs) { this.writeTimeoutMs = writeTimeoutMs; }
-    }
-    
-    public static class HealthCheck {
-        private boolean enabled = true;
-        private int intervalSeconds = 30;
-        private int timeoutMs = 5000;
-        private int maxFailures = 3;
-        
-        public boolean isEnabled() { return enabled; }
-        public void setEnabled(boolean enabled) { this.enabled = enabled; }
-        public int getIntervalSeconds() { return intervalSeconds; }
-        public void setIntervalSeconds(int intervalSeconds) { this.intervalSeconds = intervalSeconds; }
-        public int getTimeoutMs() { return timeoutMs; }
-        public void setTimeoutMs(int timeoutMs) { this.timeoutMs = timeoutMs; }
-        public int getMaxFailures() { return maxFailures; }
-        public void setMaxFailures(int maxFailures) { this.maxFailures = maxFailures; }
-    }
-    
-    public static class CircuitBreaker {
-        private boolean enabled = true;
-        private int failureThreshold = 5;
-        private int successThreshold = 3;
-        private long timeoutMs = 60000;
-        private long resetTimeoutMs = 60000;
-        
-        public boolean isEnabled() { return enabled; }
-        public void setEnabled(boolean enabled) { this.enabled = enabled; }
-        public int getFailureThreshold() { return failureThreshold; }
-        public void setFailureThreshold(int failureThreshold) { this.failureThreshold = failureThreshold; }
-        public int getSuccessThreshold() { return successThreshold; }
-        public void setSuccessThreshold(int successThreshold) { this.successThreshold = successThreshold; }
-        public long getTimeoutMs() { return timeoutMs; }
-        public void setTimeoutMs(long timeoutMs) { this.timeoutMs = timeoutMs; }
-        public long getResetTimeoutMs() { return resetTimeoutMs; }
-        public void setResetTimeoutMs(long resetTimeoutMs) { this.resetTimeoutMs = resetTimeoutMs; }
+    /**
+     * 网关属性配置
+     */
+    @Bean
+    public GatewayProperties gatewayProperties() {
+        return new GatewayProperties();
     }
 }
