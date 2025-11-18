@@ -1,179 +1,217 @@
 package com.group.gateway.core.service;
 
-import com.group.gateway.core.filter.AuthFilter;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
+import org.springframework.web.server.ServerWebExchange;
+import com.group.gateway.core.filter.AuthFilter.AuthResult;
 
+import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 /**
  * 请求上下文服务
- * 负责存储和管理请求相关上下文信息
+ * 用于存储和管理请求相关的上下文信息，包括认证信息、追踪ID、请求时间等
  * 
  * @author Group Gateway Team
  * @version 1.0.0
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class RequestContextService {
     
     /**
-     * 上下文存储
+     * 上下文缓存
      */
-    private final ConcurrentMap<String, RequestContext> contexts = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, RequestContext> contextCache = new ConcurrentHashMap<>();
     
     /**
      * 上下文键常量
      */
-    public static final String CONTEXT_KEY = "request_context";
-    public static final String TRACE_ID_KEY = "trace_id";
-    public static final String AUTH_INFO_KEY = "auth_info";
-    public static final String CLIENT_INFO_KEY = "client_info";
-    public static final String RATE_LIMIT_INFO_KEY = "rate_limit_info";
-    public static final String START_TIME_KEY = "start_time";
-    
-    /**
-     * 过期时间（毫秒）
-     */
-    private static final long EXPIRATION_TIME = 60 * 60 * 1000; // 1小时
+    public static final String CONTEXT_TRACE_ID = "traceId";
+    public static final String CONTEXT_AUTH_INFO = "authInfo";
+    public static final String CONTEXT_CLIENT_INFO = "clientInfo";
+    public static final String CONTEXT_RATE_LIMIT_INFO = "rateLimitInfo";
+    public static final String CONTEXT_REQUEST_TIME = "requestTime";
     
     /**
      * 生成链路追踪ID
      */
     public String generateTraceId() {
-        return "trace_" + System.currentTimeMillis() + "_" + Thread.currentThread().getId();
+        return "trace_" + System.currentTimeMillis() + "_" + (int)(Math.random() * 10000);
     }
     
     /**
      * 设置认证信息
      */
-    public void setAuthInfo(String traceId, AuthFilter.AuthResult authResult) {
-        if (traceId != null && authResult != null) {
-            RequestContext context = getContext(traceId);
-            if (context != null) {
-                context.setAuthInfo(authResult);
-            }
-        }
+    public void setAuthInfo(ServerWebExchange exchange, AuthResult authInfo) {
+        String traceId = getOrCreateTraceId(exchange);
+        RequestContext context = getOrCreateContext(traceId);
+        context.setAuthInfo(authInfo);
+        contextCache.put(traceId, context);
     }
     
     /**
      * 获取认证信息
      */
-    public AuthFilter.AuthResult getAuthInfo(String traceId) {
-        RequestContext context = getContext(traceId);
+    public AuthResult getAuthInfo(ServerWebExchange exchange) {
+        String traceId = getTraceId(exchange);
+        if (traceId == null) {
+            return null;
+        }
+        
+        RequestContext context = contextCache.get(traceId);
         return context != null ? context.getAuthInfo() : null;
     }
     
     /**
      * 设置客户端信息
      */
-    public void setClientInfo(String traceId, ClientInfo clientInfo) {
-        if (traceId != null && clientInfo != null) {
-            RequestContext context = getContext(traceId);
-            if (context != null) {
-                context.setClientInfo(clientInfo);
-            }
-        }
+    public void setClientInfo(ServerWebExchange exchange, ClientInfo clientInfo) {
+        String traceId = getOrCreateTraceId(exchange);
+        RequestContext context = getOrCreateContext(traceId);
+        context.setClientInfo(clientInfo);
+        contextCache.put(traceId, context);
     }
     
     /**
      * 获取客户端信息
      */
-    public ClientInfo getClientInfo(String traceId) {
-        RequestContext context = getContext(traceId);
+    public ClientInfo getClientInfo(ServerWebExchange exchange) {
+        String traceId = getTraceId(exchange);
+        if (traceId == null) {
+            return null;
+        }
+        
+        RequestContext context = contextCache.get(traceId);
         return context != null ? context.getClientInfo() : null;
     }
     
     /**
      * 设置限流信息
      */
-    public void setRateLimitInfo(String traceId, RateLimitInfo rateLimitInfo) {
-        if (traceId != null && rateLimitInfo != null) {
-            RequestContext context = getContext(traceId);
-            if (context != null) {
-                context.setRateLimitInfo(rateLimitInfo);
-            }
-        }
+    public void setRateLimitInfo(ServerWebExchange exchange, RateLimitInfo rateLimitInfo) {
+        String traceId = getOrCreateTraceId(exchange);
+        RequestContext context = getOrCreateContext(traceId);
+        context.setRateLimitInfo(rateLimitInfo);
+        contextCache.put(traceId, context);
     }
     
     /**
      * 获取限流信息
      */
-    public RateLimitInfo getRateLimitInfo(String traceId) {
-        RequestContext context = getContext(traceId);
+    public RateLimitInfo getRateLimitInfo(ServerWebExchange exchange) {
+        String traceId = getTraceId(exchange);
+        if (traceId == null) {
+            return null;
+        }
+        
+        RequestContext context = contextCache.get(traceId);
         return context != null ? context.getRateLimitInfo() : null;
     }
     
     /**
      * 标记请求开始
      */
-    public void markRequestStart(String traceId) {
-        if (traceId != null) {
-            RequestContext context = getContext(traceId);
-            if (context != null) {
-                context.setStartTime(java.time.Instant.now());
-                context.setStatus(RequestContext.ProcessingStatus.PROCESSING);
-            }
-        }
+    public void markRequestStart(ServerWebExchange exchange) {
+        String traceId = getOrCreateTraceId(exchange);
+        RequestContext context = getOrCreateContext(traceId);
+        context.setStartTime(Instant.now());
+        context.setStatus(RequestContext.ProcessingStatus.PROCESSING);
+        contextCache.put(traceId, context);
+        
+        log.debug("请求开始 | traceId={} | path={}", traceId, exchange.getRequest().getURI().getPath());
     }
     
     /**
      * 标记请求完成
      */
-    public void markRequestComplete(String traceId) {
-        if (traceId != null) {
-            RequestContext context = getContext(traceId);
-            if (context != null) {
-                context.markComplete();
-            }
+    public void markRequestComplete(ServerWebExchange exchange) {
+        String traceId = getTraceId(exchange);
+        if (traceId == null) {
+            return;
+        }
+        
+        RequestContext context = contextCache.get(traceId);
+        if (context != null) {
+            context.markComplete();
+            log.debug("请求完成 | traceId={} | duration={}ms", traceId, context.getDuration());
         }
     }
     
     /**
      * 标记请求失败
      */
-    public void markRequestFailed(String traceId, String errorMessage) {
-        if (traceId != null) {
-            RequestContext context = getContext(traceId);
-            if (context != null) {
-                context.markFailed(errorMessage);
-            }
+    public void markRequestFailed(ServerWebExchange exchange, String errorMessage) {
+        String traceId = getTraceId(exchange);
+        if (traceId == null) {
+            return;
+        }
+        
+        RequestContext context = contextCache.get(traceId);
+        if (context != null) {
+            context.markFailed(errorMessage);
+            log.warn("请求失败 | traceId={} | error={}", traceId, errorMessage);
         }
     }
     
     /**
-     * 设置业务信息
+     * 获取请求上下文
      */
-    public void setBusinessInfo(String traceId, String businessModule, String targetService, String targetUrl) {
-        if (traceId != null) {
-            RequestContext context = getContext(traceId);
-            if (context != null) {
-                context.setBusinessModule(businessModule);
-                context.setTargetService(targetService);
-                context.setTargetUrl(targetUrl);
-            }
-        }
-    }
-    
-    /**
-     * 获取上下文
-     */
-    public RequestContext getContext(String traceId) {
-        return traceId != null ? contexts.get(traceId) : null;
-    }
-    
-    /**
-     * 创建新的上下文
-     */
-    public RequestContext createContext(String traceId) {
+    public RequestContext getRequestContext(ServerWebExchange exchange) {
+        String traceId = getTraceId(exchange);
         if (traceId == null) {
             return null;
         }
         
-        RequestContext context = new RequestContext(traceId);
-        RequestContext existing = contexts.putIfAbsent(traceId, context);
-        return existing != null ? existing : context;
+        return contextCache.get(traceId);
+    }
+    
+    /**
+     * 获取或创建追踪ID
+     */
+    private String getOrCreateTraceId(ServerWebExchange exchange) {
+        String traceId = getTraceId(exchange);
+        if (traceId == null) {
+            traceId = generateTraceId();
+            ServerHttpRequest.Builder builder = exchange.getRequest().mutate();
+            builder.header("X-Trace-ID", traceId);
+            ServerWebExchange newExchange = exchange.mutate()
+                .request(builder.build())
+                .build();
+            
+            // 注意：这里不能直接修改exchange，需要在调用方处理
+            exchange.getAttributes().put("X-Trace-ID", traceId);
+        }
+        return traceId;
+    }
+    
+    /**
+     * 获取追踪ID
+     */
+    private String getTraceId(ServerWebExchange exchange) {
+        // 首先从请求头获取
+        String traceId = exchange.getRequest().getHeaders().getFirst("X-Trace-ID");
+        if (traceId != null) {
+            return traceId;
+        }
+        
+        // 如果请求头中没有，从属性中获取
+        traceId = (String) exchange.getAttributes().get("X-Trace-ID");
+        return traceId;
+    }
+    
+    /**
+     * 获取或创建请求上下文
+     */
+    private RequestContext getOrCreateContext(String traceId) {
+        RequestContext context = contextCache.get(traceId);
+        if (context == null) {
+            context = new RequestContext(traceId);
+        }
+        return context;
     }
     
     /**
@@ -181,103 +219,30 @@ public class RequestContextService {
      */
     public void cleanupExpiredContexts() {
         long currentTime = System.currentTimeMillis();
-        contexts.entrySet().removeIf(entry -> {
+        long expireTime = currentTime - (60 * 60 * 1000); // 1小时前
+        
+        contextCache.entrySet().removeIf(entry -> {
             RequestContext context = entry.getValue();
             return context.getStartTime() != null && 
-                   (currentTime - context.getStartTime().toEpochMilli()) > EXPIRATION_TIME;
+                   context.getStartTime().toEpochMilli() < expireTime;
         });
         
-        log.debug("清理过期上下文完成，当前活跃上下文数量: {}", contexts.size());
+        log.debug("清理过期上下文完成 | 当前缓存大小={}", contextCache.size());
     }
     
     /**
-     * 清理上下文
+     * 获取当前上下文统计信息
      */
-    public void cleanupContext(String traceId) {
-        if (traceId != null) {
-            contexts.remove(traceId);
-            log.debug("清理上下文: {}", traceId);
-        }
-    }
-    
-    /**
-     * 获取所有上下文（用于监控）
-     */
-    public ConcurrentHashMap<String, RequestContext> getAllContexts() {
-        return new ConcurrentHashMap<>(contexts);
-    }
-    
-    /**
-     * 获取上下文统计信息
-     */
-    public ContextStatistics getContextStatistics() {
-        int total = contexts.size();
-        int pending = 0;
-        int processing = 0;
-        int completed = 0;
-        int failed = 0;
-        long totalDuration = 0;
-        long completedCount = 0;
-        
-        for (RequestContext context : contexts.values()) {
-            switch (context.getStatus()) {
-                case PENDING:
-                    pending++;
-                    break;
-                case PROCESSING:
-                    processing++;
-                    break;
-                case COMPLETED:
-                    completed++;
-                    if (context.getDuration() != null) {
-                        totalDuration += context.getDuration();
-                        completedCount++;
-                    }
-                    break;
-                case FAILED:
-                    failed++;
-                    break;
-            }
-        }
-        
-        double avgDuration = completedCount > 0 ? (double) totalDuration / completedCount : 0;
-        
-        return new ContextStatistics(total, pending, processing, completed, failed, avgDuration);
-    }
-    
-    /**
-     * 上下文统计信息
-     */
-    public static class ContextStatistics {
-        private final int total;
-        private final int pending;
-        private final int processing;
-        private final int completed;
-        private final int failed;
-        private final double avgDuration;
-        
-        public ContextStatistics(int total, int pending, int processing, int completed, int failed, double avgDuration) {
-            this.total = total;
-            this.pending = pending;
-            this.processing = processing;
-            this.completed = completed;
-            this.failed = failed;
-            this.avgDuration = avgDuration;
-        }
-        
-        public int getTotal() { return total; }
-        public int getPending() { return pending; }
-        public int getProcessing() { return processing; }
-        public int getCompleted() { return completed; }
-        public int getFailed() { return failed; }
-        public double getAvgDuration() { return avgDuration; }
-        
-        @Override
-        public String toString() {
-            return String.format(
-                "ContextStatistics{total=%d, pending=%d, processing=%d, completed=%d, failed=%d, avgDuration=%.2fms}",
-                total, pending, processing, completed, failed, avgDuration
-            );
-        }
+    public String getContextStatistics() {
+        int totalContexts = contextCache.size();
+        long completedContexts = contextCache.values().stream()
+            .mapToLong(context -> context.getStatus() == RequestContext.ProcessingStatus.COMPLETED ? 1 : 0)
+            .sum();
+        long failedContexts = contextCache.values().stream()
+            .mapToLong(context -> context.getStatus() == RequestContext.ProcessingStatus.FAILED ? 1 : 0)
+            .sum();
+            
+        return String.format("总上下文: %d, 完成: %d, 失败: %d", 
+            totalContexts, completedContexts, failedContexts);
     }
 }
