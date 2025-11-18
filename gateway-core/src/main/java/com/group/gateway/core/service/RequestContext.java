@@ -1,6 +1,5 @@
 package com.group.gateway.core.service;
 
-import com.group.gateway.core.filter.AuthFilter;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
@@ -8,8 +7,8 @@ import lombok.AllArgsConstructor;
 import java.time.Instant;
 
 /**
- * 请求上下文信息
- * 用于存储单个请求的完整上下文信息
+ * 请求上下文
+ * 用于存储和管理请求的完整上下文信息，包括认证信息、追踪信息、执行状态等
  * 
  * @author Group Gateway Team
  * @version 1.0.0
