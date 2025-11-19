@@ -1,0 +1,399 @@
+server:
+  port: 8080
+  # servlet:
+  #   context-path: /gateway
+
+spring:
+  application:
+    name: gateway-core
+  profiles:
+    active: dev
+  
+  cloud:
+    # Spring Cloud Gateway配置
+    gateway:
+      enabled: true
+      routes:
+        # 公共API路由
+        - id: public-api
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/v1/public/**
+          filters:
+            - StripPrefix=2
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 100
+                redis-rate-limiter.burstCapacity: 200
+                key-resolver: "#{@ipKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: public-api-circuit-breaker
+                fallbackUri: forward:/fallback/public
+          timeout:
+            request: 5000ms
+            response: 5000ms
+      
+        # 私有API路由
+        - id: private-api
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/v1/private/**
+          filters:
+            - StripPrefix=2
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                key-resolver: "#{@userKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: private-api-circuit-breaker
+                fallbackUri: forward:/fallback/private
+          timeout:
+            request: 3000ms
+            response: 3000ms
+            
+        # 管理API路由
+        - id: admin-api
+          uri: http://localhost:8083
+          predicates:
+            - Path=/api/v1/admin/**
+          filters:
+            - StripPrefix=2
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                key-resolver: "#{@adminKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: admin-api-circuit-breaker
+                fallbackUri: forward:/fallback/admin
+          timeout:
+            request: 2000ms
+            response: 2000ms
+            
+        # 实时数据API路由
+        - id: realtime-api
+          uri: http://localhost:8084
+          predicates:
+            - Path=/api/v1/realtime/**
+          filters:
+            - StripPrefix=2
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 200
+                redis-rate-limiter.burstCapacity: 500
+                key-resolver: "#{@ipKeyResolver}"
+            - name: CircuitBreaker
+              args:
+                name: realtime-api-circuit-breaker
+                fallbackUri: forward:/fallback/realtime
+          timeout:
+            request: 1000ms
+            response: 1000ms
+            
+        # WebSocket路由
+        - id: websocket-route
+          uri: http://localhost:8085
+          predicates:
+            - Path=/ws/**
+          filters:
+            - StripPrefix=1
+          timeout:
+            request: 0s
+            response: 0s
+            
+      # 全局CORS配置
+      globalcors:
+        corsConfigurations:
+          '[/**]':
+            allowedOrigins: 
+              - "http://localhost:3000"
+              - "http://localhost:8080"
+              - "https://*.example.com"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+              - PATCH
+            allowedHeaders:
+              - "*"
+            allowCredentials: true
+            maxAge: 3600
+            
+      # 默认过滤器配置
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter.replenishRate: 1000
+            redis-rate-limiter.burstCapacity: 2000
+            key-resolver: "#{@defaultKeyResolver}"
+        - name: CircuitBreaker
+          args:
+            name: default-circuit-breaker
+            fallbackUri: forward:/fallback/system
+            
+    # 服务发现配置
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:public}
+        group: ${NACOS_GROUP:DEFAULT_GROUP}
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+        
+    # 配置中心配置
+    config:
+      server-addr: ${NACOS_SERVER:localhost:8848}
+      namespace: ${NACOS_NAMESPACE:public}
+      group: ${NACOS_GROUP:DEFAULT_GROUP}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      
+  # Redis配置
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    database: ${REDIS_DATABASE:0}
+    timeout: 5000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+        max-wait: -1ms
+        
+  # 数据源配置（如果需要数据库存储）
+  datasource:
+    url: jdbc:h2:mem:gateway;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+    
+# JWT配置
+gateway:
+  security:
+    jwt:
+      enabled: true
+      secret: ${JWT_SECRET:MySecretKeyForGateway2023Group}
+      expiration: ${JWT_EXPIRATION:86400000} # 24小时（毫秒）
+      refresh-expiration: ${JWT_REFRESH_EXPIRATION:604800000} # 7天（毫秒）
+      header: ${JWT_HEADER:Authorization}
+      prefix: ${JWT_PREFIX:Bearer }
+      issuer: ${JWT_ISSUER:group-gateway}
+      algorithms: 
+        - HS256
+        - HS384
+        - HS512
+      audiences: 
+        - api-clients
+        
+    api-key:
+      enabled: true
+      header: X-API-Key
+      expiration: ${API_KEY_EXPIRATION:86400000} # 24小时（毫秒）
+      prefix: sk-
+      supported-types:
+        - api_key
+        - app_key
+        - user_key
+        
+    oauth:
+      enabled: false
+      server-url: ${OAUTH_SERVER_URL:https://oauth.example.com}
+      client-id: ${OAUTH_CLIENT_ID:}
+      client-secret: ${OAUTH_CLIENT_SECRET:}
+      scopes:
+        - api:read
+        - api:write
+      token-type: Bearer
+      token-validation-interval: 300
+      
+    whitelist:
+      enabled: false
+      ip-addresses:
+        - 127.0.0.1
+        - 192.168.1.100
+      ip-ranges:
+        - 192.168.1.0/24
+      skip-paths:
+        - /api/v1/health
+        - /api/v1/status
+      skip-user-agents:
+        - health-check
+        - monitor
+        
+    policy:
+      max-request-header-size: 8192
+      max-request-body-size: 10485760
+      max-concurrent-requests: 1000
+      rate-limit-enabled: true
+
+# 限流配置
+ratelimit:
+  # 全局限流配置
+  global:
+    enabled: true
+    threshold: 1000  # 每分钟全局请求阈值
+    windowSize: 60   # 窗口大小（秒）
+    
+  # IP限流配置
+  ip:
+    enabled: true
+    threshold: 100   # 每分钟每个IP的请求阈值
+    windowSize: 60
+    
+  # 用户限流配置
+  user:
+    enabled: true
+    threshold: 50    # 每分钟每个用户的请求阈值
+    windowSize: 60
+    
+  # API限流配置
+  api:
+    enabled: true
+    defaultThreshold: 100  # 默认每分钟阈值
+    highPriorityThreshold: 200  # 高优先级API阈值
+    
+  # 租户限流配置
+  tenant:
+    enabled: true
+    threshold: 1000  # 每分钟每个租户的请求阈值
+    windowSize: 60
+    
+  # 限流算法配置
+  algorithm:
+    tokenBucket:
+      refillRate: 10     # 令牌生成速率（每秒）
+      capacity: 100      # 令牌桶容量
+    slidingWindow:
+      windowSize: 60     # 滑动窗口大小（秒）
+      bucketSize: 60     # 时间桶数量
+
+# 监控配置
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,ratelimit
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+    ratelimit:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: ${spring.application.name}
+      environment: ${spring.profiles.active}
+      
+# 日志配置
+logging:
+  level:
+    com.group.gateway: ${LOG_LEVEL:INFO}
+    org.springframework.cloud.gateway: ${GATEWAY_LOG_LEVEL:DEBUG}
+    org.springframework.web.reactive: ${WEB_LOG_LEVEL:INFO}
+    reactor.netty: ${NETTY_LOG_LEVEL:WARN}
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
+  file:
+    name: logs/gateway-core.log
+    max-size: 100MB
+    max-history: 30
+
+# 自定义配置
+gateway:
+  # 跨域配置
+  cors:
+    allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:8080}
+    allowed-methods: ${CORS_METHODS:GET,POST,PUT,DELETE,OPTIONS}
+    allowed-headers: ${CORS_HEADERS:*}
+    allow-credentials: ${CORS_CREDENTIALS:true}
+    max-age: ${CORS_MAX_AGE:3600}
+    
+  # 安全配置
+  security:
+    # 白名单路径
+    whitelist:
+      - "/actuator/health"
+      - "/actuator/info"
+      - "/fallback/**"
+      - "/api/v1/public/auth/login"
+      - "/api/v1/public/auth/refresh"
+      
+  # 链路追踪配置
+  tracing:
+    enabled: true
+    traceIdHeader: "X-Trace-ID"
+    spanIdHeader: "X-Span-ID"
+    parentSpanIdHeader: "X-Parent-Span-ID"
+    
+  # 性能配置
+  performance:
+    # 连接池配置
+    connectionPool:
+      maxConnections: 200
+      acquireTimeout: 30000ms
+      maxIdleTime: 60000ms
+      
+    # 超时配置
+    timeouts:
+      connect: 5000ms
+      read: 10000ms
+      write: 10000ms
+      
+  # 熔断器配置
+  circuitbreaker:
+    failureRateThreshold: 50
+    waitDurationInOpenState: 30s
+    slidingWindowSize: 10
+    minimumNumberOfCalls: 5
+    permittedNumberOfCallsInHalfOpenState: 3
+    
+  # 重试配置
+  retry:
+    maxAttempts: 3
+    backoff:
+      initialInterval: 100ms
+      multiplier: 2
+      maxInterval: 1000ms
+
+# Swagger配置（用于API文档）
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+    
+# 任务调度配置
+spring:
+  task:
+    scheduling:
+      thread-name-prefix: "Gateway-Scheduler-"
+      pool:
+        size: 5
+    execution:
+      pool:
+        core-size: 3
+        max-size: 10
+        queue-capacity: 100
+        keep-alive: 60s
+        
+# 缓存配置
+spring:
+  cache:
+    type: redis
+    redis:
+      time-to-live: 300000  # 5分钟
+      cache-null-values: false
